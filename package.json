@@ -1,0 +1,13 @@
+{
+  "name": "n8n-bridge",
+  "version": "2.0.0",
+  "description": "Conector inteligente entre n8n e Agentes de IA via MCP",
+  "main": "src/mcp-server.js",
+  "scripts": {
+    "setup": "node scripts/setup.js",
+    "start": "node src/mcp-server.js"
+  },
+  "author": "",
+  "license": "MIT",
+  "dependencies": {}
+}
