@@ -1,75 +1,71 @@
-const http = require('http');
-const https = require('https');
-
 class N8nClient {
   constructor(baseUrl, apiKey) {
     this.baseUrl = baseUrl.replace(/\/$/, ''); // Remove trailing slash
     this.apiKey = apiKey;
   }
 
-  // Padrão inspirado no NeuralVault: fallback e resiliência
+  // Padrão inspirado no NeuralVault: fallback e resiliência com fetch nativo
   async request(method, path, body = null) {
-    return new Promise((resolve, reject) => {
-      const isHttps = this.baseUrl.startsWith('https');
-      const client = isHttps ? https : http;
+    const url = this.baseUrl + path;
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 10000); // 10 segundos timeout
+
+    const options = {
+      method,
+      headers: {
+        'Accept': 'application/json',
+        'X-N8N-API-KEY': this.apiKey
+      },
+      signal: controller.signal
+    };
+
+    if (body) {
+      options.headers['Content-Type'] = 'application/json';
+      options.body = JSON.stringify(body);
+    }
+
+    try {
+      const response = await fetch(url, options);
+      clearTimeout(timeoutId);
+
+      const contentType = response.headers.get('content-type');
+      let data;
       
-      const url = new URL(this.baseUrl + path);
-      
-      const options = {
-        hostname: url.hostname,
-        port: url.port || (isHttps ? 443 : 80),
-        path: url.pathname + url.search,
-        method: method,
-        headers: {
-          'Accept': 'application/json',
-          'X-N8N-API-KEY': this.apiKey
-        },
-        timeout: 10000 // 10 segundos timeout
-      };
-
-      if (body) {
-        options.headers['Content-Type'] = 'application/json';
-      }
-
-      const req = client.request(options, (res) => {
-        let data = '';
-        res.on('data', (chunk) => { data += chunk; });
-        res.on('end', () => {
-          if (res.statusCode >= 200 && res.statusCode < 300) {
-            try {
-              const parsed = data ? JSON.parse(data) : {};
-              resolve(parsed);
-            } catch (e) {
-              // Fallback para texto plano se não for JSON
-              resolve({ result: data });
-            }
-          } else {
-            const err = new Error(`n8n API Error: ${res.statusCode} - ${data}`);
-            err.statusCode = res.statusCode;
-            err.data = data;
-            reject(err);
-          }
-        });
-      });
-
-      req.on('error', (e) => {
-        // Diagnóstico automático para erros comuns
-        if (e.code === 'ECONNREFUSED') {
-          e.message = `Conexão recusada ao n8n em ${this.baseUrl}. O serviço está rodando?`;
+      if (contentType && contentType.includes('application/json')) {
+        data = await response.json();
+      } else {
+        const textData = await response.text();
+        try {
+          data = JSON.parse(textData);
+        } catch (e) {
+          data = { result: textData };
         }
-        reject(e);
-      });
-
-      req.on('timeout', () => {
-        req.destroy();
-        reject(new Error(`Timeout ao conectar com ${this.baseUrl}`));
-      });
-
-      if (body) {
-        req.write(JSON.stringify(body));
       }
-      req.end();
-    });
+
+      if (response.ok) {
+        return data;
+      } else {
+        const err = new Error(`n8n API Error: ${response.status} - ${JSON.stringify(data)}`);
+        err.statusCode = response.status;
+        err.data = data;
+        throw err;
+      }
+    } catch (error) {
+      clearTimeout(timeoutId);
+      
+      if (error.name === 'AbortError') {
+        throw new Error(`Timeout ao conectar com ${this.baseUrl}`);
+      }
+
+      // Diagnóstico automático para erros comuns de conexão
+      if (error.cause && error.cause.code === 'ECONNREFUSED') {
+        error.message = `Conexão recusada ao n8n em ${this.baseUrl}. O serviço está rodando?`;
+      } else if (error.message.includes('fetch failed')) {
+        error.message = `Falha na requisição para ${this.baseUrl}: ${error.message}`;
+      }
+
+      throw error;
+    }
   }
 
   // Ferramentas da API
@@ -84,6 +80,14 @@ class N8nClient {
 
   async getWorkflow(id) {
     return this.request('GET', `/api/v1/workflows/${id}`);
+  }
+  
+  async createWorkflow(data) {
+    return this.request('POST', '/api/v1/workflows', data);
+  }
+  
+  async updateWorkflow(id, data) {
+    return this.request('PUT', `/api/v1/workflows/${id}`, data);
   }
 
   async setWorkflowActive(id, active) {
