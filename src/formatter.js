@@ -1,53 +1,79 @@
 class ResponseFormatter {
-  // Estima os tokens (tamanho / 4 como aproximação heurística do NeuralVault)
+  // Estima os tokens (tamanho / 4 como aproximação heurística)
   static estimateTokens(obj) {
-    const size = Buffer.byteLength(JSON.stringify(obj), 'utf8');
-    return Math.max(1, Math.round(size / 4));
+    if (obj === null || obj === undefined) return 1;
+    try {
+      const str = typeof obj === 'string' ? obj : JSON.stringify(obj);
+      const size = Buffer.byteLength(str, 'utf8');
+      return Math.max(1, Math.round(size / 4));
+    } catch {
+      return 1;
+    }
   }
 
   static formatWorkflowsList(workflows) {
+    if (!Array.isArray(workflows) || workflows.length === 0) {
+      return 'Nenhum fluxo encontrado no n8n.';
+    }
+
     let md = '## 📋 Fluxos n8n Encontrados\n\n';
     md += '| # | Nome | ID | Status | ~Peso | Tags |\n';
     md += '|---|---|---|---|---|---|\n';
     
     workflows.forEach((wf, index) => {
+      if (!wf) return;
+      const name = wf.name || '(Sem nome)';
+      const id = wf.id || '(Sem ID)';
       const status = wf.active ? '✅ Ativo' : '⏸️ Inativo';
       const weight = this.estimateTokens(wf);
-      const tags = (wf.tags || []).map(t => t.name).join(', ') || '-';
-      md += `| ${index + 1} | ${wf.name} | ${wf.id} | ${status} | ~${weight} | ${tags} |\n`;
+      const tags = (Array.isArray(wf.tags) ? wf.tags : []).map(t => (t && t.name) ? t.name : String(t)).join(', ') || '-';
+      md += `| ${index + 1} | ${name} | ${id} | ${status} | ~${weight} | ${tags} |\n`;
     });
 
-    md += '\n💡 Use `n8n_obter_fluxo <ID>` para um resumo estruturado, ou `n8n_obter_fluxo <ID> completo` para o JSON integral.';
+    md += '\n💡 Use `n8n_obter_fluxo <ID>` para um resumo estruturado, ou `n8n_obter_fluxo <ID> detalhe: true` para o JSON integral.';
     return md;
   }
 
   static formatWorkflowSummary(workflow) {
-    const nodes = workflow.nodes || [];
-    const connections = workflow.connections || {};
+    if (!workflow || typeof workflow !== 'object') {
+      return 'Fluxo não encontrado ou resposta vazia.';
+    }
+
+    const nodes = Array.isArray(workflow.nodes) ? workflow.nodes : [];
+    const connections = (workflow.connections && typeof workflow.connections === 'object') ? workflow.connections : {};
     
     let connectionCount = 0;
     Object.values(connections).forEach(nodeConns => {
-      Object.values(nodeConns).forEach(connArray => {
-        connectionCount += connArray.length;
-      });
+      if (nodeConns && typeof nodeConns === 'object') {
+        Object.values(nodeConns).forEach(connArray => {
+          if (Array.isArray(connArray)) {
+            connectionCount += connArray.length;
+          }
+        });
+      }
     });
 
     const nodeTypes = {};
     let triggerCount = 0;
     nodes.forEach(node => {
-      const type = node.type.split('.').pop(); // e.g. n8n-nodes-base.httpRequest -> httpRequest
+      if (!node) return;
+      const rawType = String(node.type || 'unknown');
+      const type = rawType.split('.').pop() || rawType;
       nodeTypes[type] = (nodeTypes[type] || 0) + 1;
-      if (node.type.includes('trigger') || node.type.includes('Webhook')) {
+      if (rawType.toLowerCase().includes('trigger') || rawType.toLowerCase().includes('webhook')) {
         triggerCount++;
       }
     });
 
-    const typesStr = Object.entries(nodeTypes).map(([type, count]) => `${type}(${count})`).join(', ');
+    const typesStr = Object.entries(nodeTypes).map(([type, count]) => `${type}(${count})`).join(', ') || 'Nenhum nó';
     const weight = this.estimateTokens(workflow);
     const status = workflow.active ? '✅ Ativo' : '⏸️ Inativo';
+    const createdAtStr = workflow.createdAt ? (String(workflow.createdAt).split('T')[0] || String(workflow.createdAt)) : '-';
+    const wfName = workflow.name || '(Sem nome)';
+    const wfId = workflow.id || '-';
 
-    let md = `## 🧩 Fluxo: "${workflow.name}" (ID: ${workflow.id})\n`;
-    md += `- **Status**: ${status} | **Criado**: ${new Date(workflow.createdAt).toISOString().split('T')[0]}\n`;
+    let md = `## 🧩 Fluxo: "${wfName}" (ID: ${wfId})\n`;
+    md += `- **Status**: ${status} | **Criado**: ${createdAtStr}\n`;
     md += `- **Nós**: ${nodes.length} | **Conexões**: ${connectionCount} | **Peso bruto**: ~${weight} tokens\n`;
     md += `- **Tipos de nó presentes**: ${typesStr}\n`;
     
@@ -55,12 +81,12 @@ class ResponseFormatter {
       md += `- **Possui Triggers/Webhooks**: Sim (${triggerCount})\n`;
     }
 
-    md += `\n💡 Use \`n8n_obter_fluxo ${workflow.id} completo\` se precisar ler ou modificar a definição inteira dos nós.`;
+    md += `\n💡 Use \`n8n_obter_fluxo ${wfId} detalhe: true\` se precisar ler ou modificar a definição inteira dos nós.`;
     return md;
   }
 
   static formatExecutionsList(executions) {
-    if (!executions || executions.length === 0) {
+    if (!Array.isArray(executions) || executions.length === 0) {
       return 'Nenhuma execução encontrada para os filtros aplicados.';
     }
 
@@ -69,17 +95,33 @@ class ResponseFormatter {
     md += '|---|---|---|---|---|\n';
 
     executions.forEach(ex => {
+      if (!ex) return;
       const statusIcon = ex.finished ? (ex.status === 'success' ? '✅ Sucesso' : '❌ Erro') : '⏳ Rodando';
-      const durationStr = ex.stoppedAt 
-        ? `${Math.round((new Date(ex.stoppedAt) - new Date(ex.startedAt)) / 1000)}s` 
-        : '-';
+      let durationStr = '-';
+      if (ex.stoppedAt && ex.startedAt) {
+        try {
+          const diffMs = new Date(ex.stoppedAt) - new Date(ex.startedAt);
+          if (!isNaN(diffMs)) {
+            durationStr = `${Math.max(0, Math.round(diffMs / 1000))}s`;
+          }
+        } catch {
+          durationStr = '-';
+        }
+      }
         
-      const time = new Date(ex.startedAt).toLocaleString();
+      let time = '-';
+      if (ex.startedAt) {
+        try {
+          time = new Date(ex.startedAt).toLocaleString();
+        } catch {
+          time = String(ex.startedAt);
+        }
+      }
       
-      // Alguns n8n retornam o workflow no objeto, outros apenas o ID
-      const workflowName = ex.workflowData ? ex.workflowData.name : ex.workflowId;
+      const workflowName = (ex.workflowData && ex.workflowData.name) ? ex.workflowData.name : (ex.workflowId || '-');
+      const exId = ex.id || '-';
       
-      md += `| ${ex.id} | ${workflowName} | ${time} | ${durationStr} | ${statusIcon} |\n`;
+      md += `| ${exId} | ${workflowName} | ${time} | ${durationStr} | ${statusIcon} |\n`;
     });
 
     md += '\n💡 Use `n8n_obter_execucao <ID>` para ver detalhes dos dados de entrada, saída e mensagens de erro.';
@@ -88,3 +130,4 @@ class ResponseFormatter {
 }
 
 module.exports = ResponseFormatter;
+

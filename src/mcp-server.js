@@ -1,3 +1,25 @@
+/**
+ * n8n-bridge-mcp - Servidor MCP resiliente para n8n
+ * Protocolo: Model Context Protocol (MCP) 2024-11-05 / JSON-RPC 2.0
+ */
+
+// REDIRECIONAMENTO DE LOGS: Garante que stdout contenha EXCLUSIVAMENTE mensagens JSON-RPC
+const originalConsoleLog = console.log;
+const originalConsoleInfo = console.info;
+const originalConsoleWarn = console.warn;
+
+console.log = (...args) => {
+  if (process.stderr && process.stderr.write) {
+    process.stderr.write(`[MCP INFO] ${args.map(a => (typeof a === 'object' ? JSON.stringify(a) : a)).join(' ')}\n`);
+  }
+};
+console.info = console.log;
+console.warn = (...args) => {
+  if (process.stderr && process.stderr.write) {
+    process.stderr.write(`[MCP WARN] ${args.map(a => (typeof a === 'object' ? JSON.stringify(a) : a)).join(' ')}\n`);
+  }
+};
+
 const readline = require('readline');
 const config = require('./config');
 const audit = require('./audit');
@@ -6,14 +28,21 @@ const ResponseFormatter = require('./formatter');
 
 class MCPServer {
   constructor() {
-    try {
-      const { baseUrl, apiKey } = config.required;
-      this.client = new N8nClient(baseUrl, apiKey);
-      this.dynamicToolsMap = new Map(); // Para guardar os caminhos dos webhooks das ferramentas dinâmicas
-    } catch (e) {
-      this.sendError(null, -32000, e.message);
-      process.exit(1);
-    }
+    this.dynamicToolsMap = new Map();
+    this.initClient();
+
+    // Tratamento de exceções globais para nunca derrubar o processo
+    process.on('uncaughtException', (err) => {
+      if (process.stderr && process.stderr.write) {
+        process.stderr.write(`[MCP UncaughtException] ${err.stack || err.message}\n`);
+      }
+    });
+
+    process.on('unhandledRejection', (reason) => {
+      if (process.stderr && process.stderr.write) {
+        process.stderr.write(`[MCP UnhandledRejection] ${reason && (reason.stack || reason.message) || reason}\n`);
+      }
+    });
 
     this.rl = readline.createInterface({
       input: process.stdin,
@@ -22,26 +51,50 @@ class MCPServer {
     });
 
     this.rl.on('line', (line) => {
-      if (!line.trim()) return;
+      const trimmed = line.trim();
+      if (!trimmed) return;
+      
       try {
-        const msg = JSON.parse(line);
-        this.handleMessage(msg);
+        const msg = JSON.parse(trimmed);
+        this.handleMessage(msg).catch((err) => {
+          if (process.stderr && process.stderr.write) {
+            process.stderr.write(`[MCP HandleError] ${err.message}\n`);
+          }
+        });
       } catch (e) {
-        // Ignorar linhas não JSON
+        // Enviar erro JSON-RPC de Parse Error (-32700) se for linha malformada
+        this.sendError(null, -32700, 'Parse error: Linha recebida não é um JSON válido');
       }
     });
   }
 
-  send(msg) {
-    console.log(JSON.stringify(msg));
+  initClient() {
+    const { baseUrl, apiKey, timeout } = config.required;
+    this.client = new N8nClient(baseUrl, apiKey, timeout);
   }
 
-  sendError(id, code, message) {
-    this.send({
+  // Envia EXCLUSIVAMENTE para stdout no formato JSON-RPC 2.0 delimitado por \n
+  send(msg) {
+    try {
+      const raw = JSON.stringify(msg) + '\n';
+      process.stdout.write(raw);
+    } catch (err) {
+      if (process.stderr && process.stderr.write) {
+        process.stderr.write(`[MCP SendError] ${err.message}\n`);
+      }
+    }
+  }
+
+  sendError(id, code, message, data = null) {
+    const payload = {
       jsonrpc: '2.0',
-      id,
+      id: (id !== undefined) ? id : null,
       error: { code, message }
-    });
+    };
+    if (data !== null && data !== undefined) {
+      payload.error.data = data;
+    }
+    this.send(payload);
   }
 
   sendResult(id, result) {
@@ -53,269 +106,376 @@ class MCPServer {
   }
   
   toSnakeCase(str) {
-    return str.replace(/\W+/g, '_').toLowerCase();
+    if (!str) return 'tool';
+    return String(str).replace(/\W+/g, '_').toLowerCase();
+  }
+
+  getStaticTools() {
+    return [
+      {
+        name: 'n8n_saude',
+        description: 'Verifica se o servidor n8n está online e acessível.',
+        inputSchema: { type: 'object', properties: {} }
+      },
+      {
+        name: 'n8n_listar_fluxos',
+        description: 'Retorna um índice compacto de todos os fluxos com seus pesos estimados e status.',
+        inputSchema: { type: 'object', properties: {} }
+      },
+      {
+        name: 'n8n_obter_fluxo',
+        description: 'Obtém informações de um fluxo pelo ID. Por padrão traz resumo estruturado. Se detalhe: true, traz o JSON integral.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            id: { type: 'string', description: 'ID do fluxo no n8n' },
+            detalhe: { type: 'boolean', description: 'Se true, retorna o JSON integral do fluxo. Padrão: false' }
+          },
+          required: ['id']
+        }
+      },
+      {
+        name: 'n8n_criar_fluxo',
+        description: 'Cria um novo fluxo de automação no n8n.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            name: { type: 'string', description: 'Nome do fluxo' },
+            nodes: { type: 'array', description: 'Array de nós do fluxo' },
+            connections: { type: 'object', description: 'Objeto de conexões do fluxo' }
+          },
+          required: ['name']
+        }
+      },
+      {
+        name: 'n8n_atualizar_fluxo',
+        description: 'Atualiza um fluxo existente no n8n.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            id: { type: 'string', description: 'ID do fluxo a ser atualizado' },
+            name: { type: 'string', description: 'Novo nome do fluxo' },
+            nodes: { type: 'array', description: 'Array de nós do fluxo' },
+            connections: { type: 'object', description: 'Objeto de conexões do fluxo' }
+          },
+          required: ['id']
+        }
+      },
+      {
+        name: 'n8n_ativar_fluxo',
+        description: 'Ativa ou desativa um fluxo no n8n.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            id: { type: 'string', description: 'ID do fluxo' },
+            active: { type: 'boolean', description: 'true para ativar, false para desativar' }
+          },
+          required: ['id', 'active']
+        }
+      },
+      {
+        name: 'n8n_listar_execucoes',
+        description: 'Lista as execuções recentes com status, horário e duração.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            status: { type: 'string', description: 'Filtro por status: success, error, running, waiting' },
+            workflowId: { type: 'string', description: 'Filtrar por ID do fluxo' },
+            limit: { type: 'number', description: 'Quantidade máxima de execuções (padrão: 20)' }
+          }
+        }
+      },
+      {
+        name: 'n8n_obter_execucao',
+        description: 'Obtém detalhes completos de uma execução pelo ID (dados de entrada, nós e erros).',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            id: { type: 'string', description: 'ID da execução' }
+          },
+          required: ['id']
+        }
+      },
+      {
+        name: 'n8n_executar_webhook',
+        description: 'Dispara um webhook configurado no n8n enviando payload JSON.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            url: { type: 'string', description: 'Caminho do webhook (ex: webhook/minha-acao ou webhook-test/minha-acao)' },
+            data: { type: 'object', description: 'Payload JSON para o webhook' }
+          },
+          required: ['url']
+        }
+      },
+      {
+        name: 'n8n_auditoria',
+        description: 'Retorna o relatório de operações, status e consumo de tokens da sessão atual.',
+        inputSchema: { type: 'object', properties: {} }
+      }
+    ];
   }
 
   async handleMessage(msg) {
-    if (msg.method === 'initialize') {
-      this.sendResult(msg.id, {
-        protocolVersion: '2024-11-05',
-        capabilities: { tools: {} },
-        serverInfo: { name: 'n8n-bridge-neuralvault', version: '2.0.0' }
-      });
-    } else if (msg.method === 'notifications/initialized') {
-      // Setup completo
-    } else if (msg.method === 'tools/list') {
-      const staticTools = [
-        {
-          name: 'n8n_saude',
-          description: 'Verifica se o n8n está online.',
-          inputSchema: { type: 'object', properties: {} }
-        },
-        {
-          name: 'n8n_listar_fluxos',
-          description: 'Retorna um índice compacto de todos os fluxos com seus pesos estimados.',
-          inputSchema: { type: 'object', properties: {} }
-        },
-        {
-          name: 'n8n_obter_fluxo',
-          description: 'Obtém um fluxo. Por padrão traz um resumo. Para trazer o JSON completo, passe detalhe: true',
-          inputSchema: {
-            type: 'object',
-            properties: {
-              id: { type: 'string', description: 'ID do fluxo' },
-              detalhe: { type: 'boolean', description: 'Se true, retorna o JSON integral. Se false, retorna resumo.' }
-            },
-            required: ['id']
-          }
-        },
-        {
-          name: 'n8n_criar_fluxo',
-          description: 'Cria um novo fluxo no n8n.',
-          inputSchema: {
-            type: 'object',
-            properties: {
-              name: { type: 'string', description: 'Nome do fluxo' },
-              nodes: { type: 'array', description: 'Array de nós do fluxo' },
-              connections: { type: 'object', description: 'Objeto de conexões do fluxo' }
-            },
-            required: ['name']
-          }
-        },
-        {
-          name: 'n8n_atualizar_fluxo',
-          description: 'Atualiza um fluxo existente no n8n.',
-          inputSchema: {
-            type: 'object',
-            properties: {
-              id: { type: 'string', description: 'ID do fluxo a ser atualizado' },
-              name: { type: 'string', description: 'Novo nome do fluxo' },
-              nodes: { type: 'array', description: 'Array de nós do fluxo' },
-              connections: { type: 'object', description: 'Objeto de conexões do fluxo' }
-            },
-            required: ['id']
-          }
-        },
-        {
-          name: 'n8n_ativar_fluxo',
-          description: 'Ativa ou desativa um fluxo.',
-          inputSchema: {
-            type: 'object',
-            properties: {
-              id: { type: 'string' },
-              active: { type: 'boolean' }
-            },
-            required: ['id', 'active']
-          }
-        },
-        {
-          name: 'n8n_listar_execucoes',
-          description: 'Lista as execuções recentes.',
-          inputSchema: {
-            type: 'object',
-            properties: {
-              status: { type: 'string', description: 'success, error, etc' },
-              workflowId: { type: 'string' },
-              limit: { type: 'number', description: 'Padrão 20' }
-            }
-          }
-        },
-        {
-          name: 'n8n_obter_execucao',
-          description: 'Detalhes completos de uma execução pelo ID.',
-          inputSchema: {
-            type: 'object',
-            properties: {
-              id: { type: 'string' }
-            },
-            required: ['id']
-          }
-        },
-        {
-          name: 'n8n_executar_webhook',
-          description: 'Dispara um webhook enviando JSON.',
-          inputSchema: {
-            type: 'object',
-            properties: {
-              url: { type: 'string', description: 'Path do webhook, ex: webhook/teste' },
-              data: { type: 'object', description: 'Payload em JSON' }
-            },
-            required: ['url']
-          }
-        },
-        {
-          name: 'n8n_auditoria',
-          description: 'Retorna o relatório de operações e consumo de tokens da sessão atual.',
-          inputSchema: { type: 'object', properties: {} }
-        }
-      ];
+    if (!msg || typeof msg !== 'object') return;
 
+    const { id, method, params } = msg;
+
+    // 1. Handshake MCP: initialize
+    if (method === 'initialize') {
+      this.sendResult(id, {
+        protocolVersion: '2024-11-05',
+        capabilities: {
+          tools: {
+            listChanged: false
+          }
+        },
+        serverInfo: {
+          name: 'n8n-bridge-mcp',
+          version: '2.0.0'
+        }
+      });
+      return;
+    }
+
+    // 2. Notificação MCP: notifications/initialized
+    if (method === 'notifications/initialized') {
+      // Notificação não requer resposta
+      return;
+    }
+
+    // 3. Ping MCP
+    if (method === 'ping') {
+      this.sendResult(id, {});
+      return;
+    }
+
+    // 4. MCP Tools List: tools/list
+    if (method === 'tools/list') {
+      const staticTools = this.getStaticTools();
       let dynamicTools = [];
+
+      // Tentativa não-bloqueante e rápida de buscar ferramentas dinâmicas
       try {
-        const res = await this.client.getWorkflows();
-        const data = res.data || [];
-        const mcpFlows = data.filter(wf => wf.tags && wf.tags.some(t => t.name === 'mcp-tool'));
+        // Usa timeout curto de 1500ms para nunca travar a IDE se o n8n estiver offline
+        const res = await this.client.getWorkflows(1500);
+        const data = (res && Array.isArray(res.data)) ? res.data : [];
+        const mcpFlows = data.filter(wf => wf && wf.tags && Array.isArray(wf.tags) && wf.tags.some(t => t && t.name === 'mcp-tool'));
         
         for (const wf of mcpFlows) {
-          const toolName = this.toSnakeCase(wf.name);
+          if (!wf || !wf.id) continue;
+          const toolName = this.toSnakeCase(wf.name || `wf_${wf.id}`);
           
-          // Buscar detalhes do fluxo para achar o caminho do webhook
-          const wfDetails = await this.client.getWorkflow(wf.id);
-          const nodes = wfDetails.nodes || [];
-          const webhookNode = nodes.find(n => n.type === 'n8n-nodes-base.webhook');
-          const webhookPath = webhookNode && webhookNode.parameters ? webhookNode.parameters.path : toolName;
-          
-          // Guarda no mapa para usar em tools/call
-          this.dynamicToolsMap.set(toolName, webhookPath);
+          try {
+            const wfDetails = await this.client.getWorkflow(wf.id, 1000);
+            const nodes = (wfDetails && Array.isArray(wfDetails.nodes)) ? wfDetails.nodes : [];
+            const webhookNode = nodes.find(n => n && (n.type === 'n8n-nodes-base.webhook' || String(n.type).includes('webhook')));
+            const webhookPath = (webhookNode && webhookNode.parameters && webhookNode.parameters.path) 
+              ? webhookNode.parameters.path 
+              : toolName;
+            
+            this.dynamicToolsMap.set(toolName, webhookPath);
 
-          dynamicTools.push({
-            name: toolName,
-            description: `[Dynamic Tool] Fluxo n8n: ${wf.name}`,
-            inputSchema: {
-              type: 'object',
-              properties: {
-                data: { type: 'object', description: 'Payload em JSON para o webhook' }
+            dynamicTools.push({
+              name: toolName,
+              description: `[Ferramenta Dinâmica] Fluxo n8n: ${wf.name || wf.id}`,
+              inputSchema: {
+                type: 'object',
+                properties: {
+                  data: { type: 'object', description: 'Payload em JSON para o webhook do fluxo' }
+                }
               }
-            }
-          });
+            });
+          } catch {
+            // Ignora falhas em fluxos individuais
+          }
         }
       } catch (err) {
+        // Se n8n estiver offline, apenas registra na auditoria silenciosamente
         audit.log({ operation: 'fetch_dynamic_tools', status: 'error', error: err });
       }
 
-      this.sendResult(msg.id, {
+      this.sendResult(id, {
         tools: [...staticTools, ...dynamicTools]
       });
-    } else if (msg.method === 'tools/call') {
-      await this.handleToolCall(msg);
+      return;
+    }
+
+    // 5. MCP Tool Call: tools/call
+    if (method === 'tools/call') {
+      await this.handleToolCall(id, params || {});
+      return;
+    }
+
+    // 6. Suporte a métodos opcionais para compatibilidade total com clientes MCP
+    if (method === 'resources/list') {
+      this.sendResult(id, { resources: [] });
+      return;
+    }
+
+    if (method === 'prompts/list') {
+      this.sendResult(id, { prompts: [] });
+      return;
+    }
+
+    if (method === 'logging/setLevel') {
+      this.sendResult(id, {});
+      return;
+    }
+
+    // Método desconhecido: se for requisição com ID, retorna Method Not Found (-32601)
+    if (id !== undefined && id !== null) {
+      this.sendError(id, -32601, `Método não suportado: ${method}`);
     }
   }
 
-  async handleToolCall(msg) {
-    const { name, arguments: args } = msg.params;
-    let result = '';
+  async handleToolCall(id, params) {
+    const name = params.name || '';
+    const args = params.arguments || {};
+    let resultText = '';
+    let isError = false;
     let tokensEstimate = 0;
     
     try {
       if (name === 'n8n_saude') {
-        const res = await this.client.healthCheck();
-        result = `✅ n8n Online. Status: ${res.status || 'OK'}`;
-        tokensEstimate = 10;
-        audit.log({ operation: name, tokensResponse: tokensEstimate });
+        const health = await this.client.healthCheck(3000);
+        if (health.ok) {
+          resultText = `✅ **n8n Online e Operacional**\n- **URL**: ${this.client.baseUrl}\n- **Status**: ${health.status}\n- **API Key**: ${this.client.apiKey ? 'Configurada' : 'Não informada'}`;
+        } else {
+          resultText = `❌ **n8n Offline ou Inacessível**\n- **URL**: ${this.client.baseUrl}\n- **Diagnóstico**: ${health.error || 'Sem resposta do servidor'}\n- **Dica**: Certifique-se de que o contêiner ou serviço do n8n está em execução.`;
+        }
+        tokensEstimate = ResponseFormatter.estimateTokens(resultText);
+        audit.log({ operation: name, tokensResponse: tokensEstimate, status: health.ok ? 'success' : 'error' });
 
       } else if (name === 'n8n_listar_fluxos') {
         const res = await this.client.getWorkflows();
-        const data = res.data || [];
-        result = ResponseFormatter.formatWorkflowsList(data);
-        tokensEstimate = ResponseFormatter.estimateTokens(result);
+        const data = (res && Array.isArray(res.data)) ? res.data : [];
+        resultText = ResponseFormatter.formatWorkflowsList(data);
+        tokensEstimate = ResponseFormatter.estimateTokens(resultText);
         audit.log({ operation: name, tokensResponse: tokensEstimate });
 
       } else if (name === 'n8n_obter_fluxo') {
+        if (!args.id) {
+          throw new Error('Parâmetro obrigatório ausente: id');
+        }
         const res = await this.client.getWorkflow(args.id);
         if (args.detalhe) {
-          result = JSON.stringify(res, null, 2);
+          resultText = JSON.stringify(res, null, 2);
         } else {
-          result = ResponseFormatter.formatWorkflowSummary(res);
+          resultText = ResponseFormatter.formatWorkflowSummary(res);
         }
-        tokensEstimate = ResponseFormatter.estimateTokens(result);
+        tokensEstimate = ResponseFormatter.estimateTokens(resultText);
         audit.log({ operation: `${name}(${args.id})`, tokensResponse: tokensEstimate });
 
       } else if (name === 'n8n_criar_fluxo') {
+        if (!args.name) {
+          throw new Error('Parâmetro obrigatório ausente: name');
+        }
         const payload = {
           name: args.name,
-          nodes: args.nodes || [],
-          connections: args.connections || {},
+          nodes: Array.isArray(args.nodes) ? args.nodes : [],
+          connections: (args.connections && typeof args.connections === 'object') ? args.connections : {},
           active: false
         };
         const res = await this.client.createWorkflow(payload);
-        result = `Fluxo criado com sucesso. ID: ${res.id}`;
-        tokensEstimate = 20;
+        resultText = `✅ Fluxo "${args.name}" criado com sucesso! ID: \`${res.id || 'N/A'}\``;
+        tokensEstimate = 25;
         audit.log({ operation: name, tokensResponse: tokensEstimate });
         
       } else if (name === 'n8n_atualizar_fluxo') {
+        if (!args.id) {
+          throw new Error('Parâmetro obrigatório ausente: id');
+        }
         const payload = {};
-        if (args.name) payload.name = args.name;
-        if (args.nodes) payload.nodes = args.nodes;
-        if (args.connections) payload.connections = args.connections;
+        if (args.name !== undefined) payload.name = args.name;
+        if (args.nodes !== undefined) payload.nodes = args.nodes;
+        if (args.connections !== undefined) payload.connections = args.connections;
+        if (args.settings !== undefined) {
+          payload.settings = args.settings;
+        } else {
+          try {
+            const existing = await this.client.getWorkflow(args.id);
+            payload.settings = {
+              executionOrder: (existing && existing.settings && existing.settings.executionOrder) || 'v1'
+            };
+          } catch (_) {
+            payload.settings = { executionOrder: 'v1' };
+          }
+        }
         
-        const res = await this.client.updateWorkflow(args.id, payload);
-        result = `Fluxo ${args.id} atualizado com sucesso.`;
+        await this.client.updateWorkflow(args.id, payload);
+        resultText = `✅ Fluxo \`${args.id}\` atualizado com sucesso no n8n.`;
         tokensEstimate = 20;
         audit.log({ operation: `${name}(${args.id})`, tokensResponse: tokensEstimate });
 
       } else if (name === 'n8n_ativar_fluxo') {
-        await this.client.setWorkflowActive(args.id, args.active);
-        result = `Fluxo ${args.id} foi ${args.active ? 'ativado' : 'desativado'} com sucesso.`;
+        if (!args.id || args.active === undefined) {
+          throw new Error('Parâmetros obrigatórios ausentes: id e active');
+        }
+        await this.client.setWorkflowActive(args.id, Boolean(args.active));
+        resultText = `✅ Fluxo \`${args.id}\` foi ${args.active ? 'ativado' : 'desativado'} com sucesso.`;
         tokensEstimate = 20;
         audit.log({ operation: `${name}(${args.id})`, tokensResponse: tokensEstimate });
 
       } else if (name === 'n8n_listar_execucoes') {
-        const res = await this.client.getExecutions(args.status, args.workflowId, args.limit);
-        const data = res.data || [];
-        result = ResponseFormatter.formatExecutionsList(data);
-        tokensEstimate = ResponseFormatter.estimateTokens(result);
+        const res = await this.client.getExecutions(args.status, args.workflowId, args.limit || 20);
+        const data = (res && Array.isArray(res.data)) ? res.data : [];
+        resultText = ResponseFormatter.formatExecutionsList(data);
+        tokensEstimate = ResponseFormatter.estimateTokens(resultText);
         audit.log({ operation: name, tokensResponse: tokensEstimate });
 
       } else if (name === 'n8n_obter_execucao') {
+        if (!args.id) {
+          throw new Error('Parâmetro obrigatório ausente: id');
+        }
         const res = await this.client.getExecution(args.id);
-        result = JSON.stringify(res, null, 2);
-        tokensEstimate = ResponseFormatter.estimateTokens(result);
+        resultText = JSON.stringify(res, null, 2);
+        tokensEstimate = ResponseFormatter.estimateTokens(resultText);
         audit.log({ operation: `${name}(${args.id})`, tokensResponse: tokensEstimate });
 
       } else if (name === 'n8n_executar_webhook') {
-        const res = await this.client.triggerWebhook(args.url, args.data);
-        result = JSON.stringify(res, null, 2);
-        tokensEstimate = ResponseFormatter.estimateTokens(result);
+        if (!args.url) {
+          throw new Error('Parâmetro obrigatório ausente: url');
+        }
+        const res = await this.client.triggerWebhook(args.url, args.data || {});
+        resultText = typeof res === 'object' ? JSON.stringify(res, null, 2) : String(res);
+        tokensEstimate = ResponseFormatter.estimateTokens(resultText);
         audit.log({ operation: `${name}(${args.url})`, tokensResponse: tokensEstimate });
 
       } else if (name === 'n8n_auditoria') {
-        result = audit.getReport();
-        // Não auditar a própria ferramenta de auditoria para evitar loops infinitos visuais
-        
+        resultText = audit.getReport();
+        tokensEstimate = ResponseFormatter.estimateTokens(resultText);
+
       } else if (this.dynamicToolsMap.has(name)) {
-        // Ferramenta Dinâmica
         const webhookPath = this.dynamicToolsMap.get(name);
-        const res = await this.client.triggerWebhook(webhookPath, args.data || args);
-        result = JSON.stringify(res, null, 2);
-        tokensEstimate = ResponseFormatter.estimateTokens(result);
+        const res = await this.client.triggerWebhook(webhookPath, args.data !== undefined ? args.data : args);
+        resultText = typeof res === 'object' ? JSON.stringify(res, null, 2) : String(res);
+        tokensEstimate = ResponseFormatter.estimateTokens(resultText);
         audit.log({ operation: `DynamicTool(${name})`, tokensResponse: tokensEstimate });
         
       } else {
-        throw new Error(`Tool unknown: ${name}`);
+        throw new Error(`Ferramenta desconhecida: "${name}"`);
       }
 
-      this.sendResult(msg.id, {
-        content: [{ type: 'text', text: result }]
+      this.sendResult(id, {
+        content: [{ type: 'text', text: resultText }],
+        isError: false
       });
 
     } catch (e) {
-      audit.log({ operation: name, status: 'error', error: e });
-      this.sendResult(msg.id, {
-        isError: true,
-        content: [{ type: 'text', text: `Erro ao executar ${name}: ${e.message}` }]
+      audit.log({ operation: name || 'tools/call', status: 'error', error: e });
+      this.sendResult(id, {
+        content: [{ type: 'text', text: `⚠️ Falha ao executar "${name}": ${e.message}` }],
+        isError: true
       });
     }
   }
 }
 
-new MCPServer();
+// Inicia o servidor se executado diretamente
+if (require.main === module) {
+  new MCPServer();
+}
+
+module.exports = MCPServer;
+
