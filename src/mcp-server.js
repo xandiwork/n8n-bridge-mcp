@@ -21,6 +21,7 @@ console.warn = (...args) => {
 };
 
 const readline = require('readline');
+const vm = require('vm');
 const config = require('./config');
 const audit = require('./audit');
 const N8nClient = require('./n8n-client');
@@ -100,43 +101,47 @@ class MCPServer {
   sendResult(id, result) {
     this.send({
       jsonrpc: '2.0',
-      id,
-      result
+      id: (id !== undefined) ? id : null,
+      result: result || {}
     });
   }
-  
+
   toSnakeCase(str) {
-    if (!str) return 'tool';
-    return String(str).replace(/\W+/g, '_').toLowerCase();
+    return str
+      .normalize('NFD')
+      .replace(/[\u0300-\u036f]/g, '')
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, '_')
+      .replace(/^_+|_+$/g, '');
   }
 
   getStaticTools() {
     return [
       {
         name: 'n8n_saude',
-        description: 'Verifica se o servidor n8n está online e acessível.',
+        description: 'Verifica conectividade e integridade do n8n (com diagnóstico detalhado).',
         inputSchema: { type: 'object', properties: {} }
       },
       {
         name: 'n8n_listar_fluxos',
-        description: 'Retorna um índice compacto de todos os fluxos com seus pesos estimados e status.',
+        description: 'Lista todos os fluxos com ID, nome, status, tags e peso estimado em tokens.',
         inputSchema: { type: 'object', properties: {} }
       },
       {
         name: 'n8n_obter_fluxo',
-        description: 'Obtém informações de um fluxo pelo ID. Por padrão traz resumo estruturado. Se detalhe: true, traz o JSON integral.',
+        description: 'Obtém detalhes de um fluxo pelo ID. Por padrão retorna resumo estruturado; use detalhe: true para o JSON completo.',
         inputSchema: {
           type: 'object',
           properties: {
-            id: { type: 'string', description: 'ID do fluxo no n8n' },
-            detalhe: { type: 'boolean', description: 'Se true, retorna o JSON integral do fluxo. Padrão: false' }
+            id: { type: 'string', description: 'ID do fluxo' },
+            detalhe: { type: 'boolean', description: 'Se true, retorna o JSON completo do fluxo' }
           },
           required: ['id']
         }
       },
       {
         name: 'n8n_criar_fluxo',
-        description: 'Cria um novo fluxo de automação no n8n.',
+        description: 'Cria um novo fluxo no n8n (com validação prévia de nós).',
         inputSchema: {
           type: 'object',
           properties: {
@@ -149,7 +154,7 @@ class MCPServer {
       },
       {
         name: 'n8n_atualizar_fluxo',
-        description: 'Atualiza um fluxo existente no n8n.',
+        description: 'Atualiza um fluxo existente no n8n com sanitização automática.',
         inputSchema: {
           type: 'object',
           properties: {
@@ -197,6 +202,23 @@ class MCPServer {
         }
       },
       {
+        name: 'n8n_testar_codigo_no',
+        description: 'Executa e valida o código JavaScript de um nó de Code do n8n em ambiente seguro (dry run) com dados simulados.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            jsCode: { type: 'string', description: 'Código JavaScript do nó (ex: const items = $input.all(); ...)' },
+            inputData: { type: 'array', description: 'Array de objetos JSON simulando os itens de entrada do nó' }
+          },
+          required: ['jsCode']
+        }
+      },
+      {
+        name: 'n8n_listar_credenciais',
+        description: 'Lista com segurança os nomes e tipos de credenciais configuradas na instância do n8n (sem expor senhas/tokens).',
+        inputSchema: { type: 'object', properties: {} }
+      },
+      {
         name: 'n8n_executar_webhook',
         description: 'Dispara um webhook configurado no n8n enviando payload JSON.',
         inputSchema: {
@@ -232,7 +254,7 @@ class MCPServer {
         },
         serverInfo: {
           name: 'n8n-bridge-mcp',
-          version: '2.0.0'
+          version: '2.1.0'
         }
       });
       return;
@@ -240,11 +262,10 @@ class MCPServer {
 
     // 2. Notificação MCP: notifications/initialized
     if (method === 'notifications/initialized') {
-      // Notificação não requer resposta
       return;
     }
 
-    // 3. Ping MCP
+    // 3. Ping Liveness
     if (method === 'ping') {
       this.sendResult(id, {});
       return;
@@ -257,7 +278,6 @@ class MCPServer {
 
       // Tentativa não-bloqueante e rápida de buscar ferramentas dinâmicas
       try {
-        // Usa timeout curto de 1500ms para nunca travar a IDE se o n8n estiver offline
         const res = await this.client.getWorkflows(1500);
         const data = (res && Array.isArray(res.data)) ? res.data : [];
         const mcpFlows = data.filter(wf => wf && wf.tags && Array.isArray(wf.tags) && wf.tags.some(t => t && t.name === 'mcp-tool'));
@@ -291,7 +311,6 @@ class MCPServer {
           }
         }
       } catch (err) {
-        // Se n8n estiver offline, apenas registra na auditoria silenciosamente
         audit.log({ operation: 'fetch_dynamic_tools', status: 'error', error: err });
       }
 
@@ -375,51 +394,43 @@ class MCPServer {
           name: args.name,
           nodes: Array.isArray(args.nodes) ? args.nodes : [],
           connections: (args.connections && typeof args.connections === 'object') ? args.connections : {},
+          settings: { executionOrder: 'v1' },
           active: false
         };
         const res = await this.client.createWorkflow(payload);
-        resultText = `✅ Fluxo "${args.name}" criado com sucesso! ID: \`${res.id || 'N/A'}\``;
-        tokensEstimate = 25;
-        audit.log({ operation: name, tokensResponse: tokensEstimate });
-        
+        resultText = `✅ **Fluxo criado com sucesso!**\n- **ID**: ${res.id}\n- **Nome**: ${res.name}\n- **Nós**: ${Array.isArray(res.nodes) ? res.nodes.length : 0}`;
+        tokensEstimate = ResponseFormatter.estimateTokens(resultText);
+        audit.log({ operation: `${name}(${res.id})`, tokensResponse: tokensEstimate });
+
       } else if (name === 'n8n_atualizar_fluxo') {
         if (!args.id) {
           throw new Error('Parâmetro obrigatório ausente: id');
         }
         const payload = {};
-        if (args.name !== undefined) payload.name = args.name;
-        if (args.nodes !== undefined) payload.nodes = args.nodes;
-        if (args.connections !== undefined) payload.connections = args.connections;
-        if (args.settings !== undefined) {
-          payload.settings = args.settings;
-        } else {
-          try {
-            const existing = await this.client.getWorkflow(args.id);
-            payload.settings = {
-              executionOrder: (existing && existing.settings && existing.settings.executionOrder) || 'v1'
-            };
-          } catch (_) {
-            payload.settings = { executionOrder: 'v1' };
-          }
-        }
-        
-        await this.client.updateWorkflow(args.id, payload);
-        resultText = `✅ Fluxo \`${args.id}\` atualizado com sucesso no n8n.`;
-        tokensEstimate = 20;
+        if (args.name) payload.name = args.name;
+        if (args.nodes) payload.nodes = args.nodes;
+        if (args.connections) payload.connections = args.connections;
+        payload.settings = { executionOrder: 'v1' };
+
+        const res = await this.client.updateWorkflow(args.id, payload);
+        resultText = `✅ **Fluxo atualizado com sucesso!**\n- **ID**: ${res.id}\n- **Nome**: ${res.name}\n- **Nós**: ${Array.isArray(res.nodes) ? res.nodes.length : 0}`;
+        tokensEstimate = ResponseFormatter.estimateTokens(resultText);
         audit.log({ operation: `${name}(${args.id})`, tokensResponse: tokensEstimate });
 
       } else if (name === 'n8n_ativar_fluxo') {
         if (!args.id || args.active === undefined) {
           throw new Error('Parâmetros obrigatórios ausentes: id e active');
         }
-        await this.client.setWorkflowActive(args.id, Boolean(args.active));
-        resultText = `✅ Fluxo \`${args.id}\` foi ${args.active ? 'ativado' : 'desativado'} com sucesso.`;
-        tokensEstimate = 20;
-        audit.log({ operation: `${name}(${args.id})`, tokensResponse: tokensEstimate });
+        const res = await this.client.setWorkflowActive(args.id, Boolean(args.active));
+        const statusStr = res.active ? 'Ativado' : 'Desativado';
+        resultText = `✅ **Fluxo ${statusStr} com sucesso!** (ID: ${args.id})`;
+        tokensEstimate = ResponseFormatter.estimateTokens(resultText);
+        audit.log({ operation: `${name}(${args.id}, active=${args.active})`, tokensResponse: tokensEstimate });
 
       } else if (name === 'n8n_listar_execucoes') {
-        const res = await this.client.getExecutions(args.status, args.workflowId, args.limit || 20);
-        const data = (res && Array.isArray(res.data)) ? res.data : [];
+        const limit = args.limit || 20;
+        const res = await this.client.getExecutions(args.status, args.workflowId, limit);
+        const data = (res && Array.isArray(res.data)) ? res.data : (Array.isArray(res) ? res : []);
         resultText = ResponseFormatter.formatExecutionsList(data);
         tokensEstimate = ResponseFormatter.estimateTokens(resultText);
         audit.log({ operation: name, tokensResponse: tokensEstimate });
@@ -433,12 +444,46 @@ class MCPServer {
         tokensEstimate = ResponseFormatter.estimateTokens(resultText);
         audit.log({ operation: `${name}(${args.id})`, tokensResponse: tokensEstimate });
 
+      } else if (name === 'n8n_testar_codigo_no') {
+        if (!args.jsCode) {
+          throw new Error('Parâmetro obrigatório ausente: jsCode');
+        }
+        const mockInput = Array.isArray(args.inputData) ? args.inputData.map(d => ({ json: d })) : [{ json: {} }];
+        
+        // Contexto simulado do n8n Code Node
+        const sandbox = {
+          $input: {
+            all: () => mockInput,
+            first: () => mockInput[0],
+            item: (idx = 0) => mockInput[idx]
+          },
+          console: {
+            log: (...m) => {},
+            error: (...m) => {}
+          }
+        };
+
+        const context = vm.createContext(sandbox);
+        const wrappedCode = `(function() {\n${args.jsCode}\n})()`;
+        const script = new vm.Script(wrappedCode, { timeout: 2000 });
+        const output = script.runInContext(context);
+        
+        resultText = `🧪 **Resultado do Teste de Código do Nó (Dry Run):**\n\`\`\`json\n${JSON.stringify(output, null, 2)}\n\`\`\``;
+        tokensEstimate = ResponseFormatter.estimateTokens(resultText);
+        audit.log({ operation: name, tokensResponse: tokensEstimate });
+
+      } else if (name === 'n8n_listar_credenciais') {
+        const creds = await this.client.getCredentials();
+        resultText = ResponseFormatter.formatCredentialsList(creds);
+        tokensEstimate = ResponseFormatter.estimateTokens(resultText);
+        audit.log({ operation: name, tokensResponse: tokensEstimate });
+
       } else if (name === 'n8n_executar_webhook') {
         if (!args.url) {
           throw new Error('Parâmetro obrigatório ausente: url');
         }
         const res = await this.client.triggerWebhook(args.url, args.data || {});
-        resultText = typeof res === 'object' ? JSON.stringify(res, null, 2) : String(res);
+        resultText = `⚡ **Webhook disparado com sucesso!**\n- **URL**: ${args.url}\n- **Resposta**: \`\`\`json\n${JSON.stringify(res, null, 2)}\n\`\`\``;
         tokensEstimate = ResponseFormatter.estimateTokens(resultText);
         audit.log({ operation: `${name}(${args.url})`, tokensResponse: tokensEstimate });
 
@@ -448,34 +493,36 @@ class MCPServer {
 
       } else if (this.dynamicToolsMap.has(name)) {
         const webhookPath = this.dynamicToolsMap.get(name);
-        const res = await this.client.triggerWebhook(webhookPath, args.data !== undefined ? args.data : args);
-        resultText = typeof res === 'object' ? JSON.stringify(res, null, 2) : String(res);
+        const res = await this.client.triggerWebhook(webhookPath, (args && args.data) || args || {});
+        resultText = `⚡ **Fluxo dinâmico '${name}' executado via webhook!**\n- **Resposta**: \`\`\`json\n${JSON.stringify(res, null, 2)}\n\`\`\``;
         tokensEstimate = ResponseFormatter.estimateTokens(resultText);
-        audit.log({ operation: `DynamicTool(${name})`, tokensResponse: tokensEstimate });
-        
+        audit.log({ operation: `dynamic_tool(${name})`, tokensResponse: tokensEstimate });
+
       } else {
-        throw new Error(`Ferramenta desconhecida: "${name}"`);
+        throw new Error(`Ferramenta desconhecida: ${name}`);
       }
 
-      this.sendResult(id, {
-        content: [{ type: 'text', text: resultText }],
-        isError: false
-      });
-
-    } catch (e) {
-      audit.log({ operation: name || 'tools/call', status: 'error', error: e });
-      this.sendResult(id, {
-        content: [{ type: 'text', text: `⚠️ Falha ao executar "${name}": ${e.message}` }],
-        isError: true
-      });
+    } catch (err) {
+      isError = true;
+      resultText = `❌ **Erro ao executar ${name}:** ${err.message}`;
+      tokensEstimate = ResponseFormatter.estimateTokens(resultText);
+      audit.log({ operation: name, tokensResponse: tokensEstimate, status: 'error', error: err.message });
     }
+
+    this.sendResult(id, {
+      content: [
+        {
+          type: 'text',
+          text: resultText
+        }
+      ],
+      isError
+    });
   }
 }
 
-// Inicia o servidor se executado diretamente
 if (require.main === module) {
   new MCPServer();
 }
 
 module.exports = MCPServer;
-

@@ -1,6 +1,6 @@
 {
   "name": "n8n-bridge-mcp",
-  "version": "2.0.0",
+  "version": "2.1.0",
   "description": "Conector inteligente, resiliente e blindado entre n8n e Agentes de IA via Model Context Protocol (MCP 2024-11-05)",
   "main": "src/mcp-server.js",
   "scripts": {
@@ -21,7 +21,9 @@
     "antigravity",
     "ai-agent",
     "automation",
-    "workflows"
+    "workflows",
+    "dry-run",
+    "credentials"
   ],
   "author": "Alexandre Oliveira",
   "license": "MIT",
