@@ -127,7 +127,26 @@ class ResponseFormatter {
     md += '\n💡 Use `n8n_obter_execucao <ID>` para ver detalhes dos dados de entrada, saída e mensagens de erro.';
     return md;
   }
+
+  static formatCredentialsList(credentials) {
+    if (!Array.isArray(credentials) || credentials.length === 0) {
+      return 'Nenhuma credencial configurada encontrada no n8n.';
+    }
+
+    let md = '## 🔑 Credenciais e Conectores Configurados no n8n\n\n';
+    md += '| # | Nome | Tipo | ID |\n';
+    md += '|---|---|---|---|\n';
+
+    credentials.forEach((c, idx) => {
+      const name = c.name || '(Sem nome)';
+      const type = c.type || '-';
+      const id = c.id || '-';
+      md += `| ${idx + 1} | ${name} | \`${type}\` | ${id} |\n`;
+    });
+
+    md += '\n🔒 *Nota de Segurança: Valores de tokens e senhas nunca são trafegados ou expostos via MCP.*';
+    return md;
+  }
 }
 
 module.exports = ResponseFormatter;
-

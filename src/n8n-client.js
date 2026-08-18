@@ -130,6 +130,14 @@ class N8nClient {
     }
   }
 
+  async getNodeTypes(customTimeout = null) {
+    try {
+      return await this.request('GET', '/api/v1/node-types', null, customTimeout);
+    } catch (e) {
+      return [];
+    }
+  }
+
   async getWorkflows(customTimeout = null) {
     return this.request('GET', '/api/v1/workflows?limit=100', null, customTimeout);
   }
@@ -162,6 +170,22 @@ class N8nClient {
     return this.request('GET', `/api/v1/executions/${encodeURIComponent(id)}`, null, customTimeout);
   }
 
+  async getCredentials(customTimeout = null) {
+    try {
+      const res = await this.request('GET', '/api/v1/credentials?limit=50', null, customTimeout);
+      const data = (res && Array.isArray(res.data)) ? res.data : (Array.isArray(res) ? res : []);
+      // Sanitização de segurança: NUNCA expõe dados de credenciais, apenas nome e tipo
+      return data.map(c => ({
+        id: c.id,
+        name: c.name || '(Sem nome)',
+        type: c.type || 'unknown',
+        createdAt: c.createdAt
+      }));
+    } catch {
+      return [];
+    }
+  }
+
   async triggerWebhook(path, payload, customTimeout = null) {
     const cleanPath = path.startsWith('/') ? path : `/${path}`;
     return this.request('POST', cleanPath, payload, customTimeout);
@@ -169,4 +193,3 @@ class N8nClient {
 }
 
 module.exports = N8nClient;
-
