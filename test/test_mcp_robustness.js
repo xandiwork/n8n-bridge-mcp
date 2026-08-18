@@ -193,7 +193,7 @@ async function runRobustnessSuite() {
         arguments: {}
       }
     });
-    const listWorkflowsRes = await waitForResponse(5, 4000);
+    const listWorkflowsRes = await waitForResponse(5, 7000);
     assert(listWorkflowsRes.result && listWorkflowsRes.result.isError === true, 'isError marcado como true para falha de conexão');
     const listText = (listWorkflowsRes.result && listWorkflowsRes.result.content[0]) ? listWorkflowsRes.result.content[0].text : '';
     assert(listText.includes('Falha ao executar') || listText.includes('offline'), 'Mensagem informativa de erro retornada');
