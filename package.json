@@ -3,6 +3,9 @@
   "version": "2.1.0",
   "description": "Conector inteligente, resiliente e blindado entre n8n e Agentes de IA via Model Context Protocol (MCP 2024-11-05)",
   "main": "src/mcp-server.js",
+  "engines": {
+    "node": ">=18.0.0"
+  },
   "scripts": {
     "setup": "node scripts/setup.js",
     "test-connection": "node scripts/test-connection.js",

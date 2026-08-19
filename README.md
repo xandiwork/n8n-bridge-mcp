@@ -1,4 +1,4 @@
-# n8n-bridge-mcp v2.0.0
+# n8n-bridge-mcp v2.1.0
 
 Conector inteligente, resiliente e blindado entre **n8n** e Agentes de IA via **Model Context Protocol (MCP)** (Especificação 2024-11-05).
 
@@ -29,8 +29,18 @@ Conector inteligente, resiliente e blindado entre **n8n** e Agentes de IA via **
 | `n8n_listar_execucoes` | `limite` (number) | Lista execuções recentes com status, duração, horário e ID. |
 | `n8n_obter_execucao` | `id` (string) | Retorna os dados completos e logs de nós de uma execução específica. |
 | `n8n_executar_webhook` | `path` (string), `data` (object) | Dispara um webhook no n8n enviando payload JSON. |
+| `n8n_testar_codigo_no` | `jsCode` (string), `inputData` (array) | Executa o código de um nó de Code com dados simulados (dry run). Isolamento básico — não é um sandbox de segurança. |
+| `n8n_listar_credenciais` | — | Lista nomes e tipos de credenciais configuradas no n8n, sem expor valores/segredos. |
 | `n8n_auditoria` | — | Exibe o relatório de operações, métricas de taxa de erro e consumo de tokens da sessão. |
 | `[Ferramentas Dinâmicas]` | `data` (object) | Fluxos marcados com a tag `mcp-tool` são expostos dinamicamente como ferramentas customizadas. |
+
+---
+
+## 🔒 Nota de Segurança
+
+- O `.env` nunca deve ser commitado (já está no `.gitignore`) — copie `.env.example` e preencha localmente.
+- `n8n_testar_codigo_no` roda o código no módulo `vm` nativo do Node, que oferece isolamento básico, não um sandbox de segurança real. Não use com código de origem não confiável.
+- `n8n_listar_credenciais` nunca retorna valores de senha/token, apenas nome e tipo.
 
 ---
 
