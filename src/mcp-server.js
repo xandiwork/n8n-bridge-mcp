@@ -203,7 +203,7 @@ class MCPServer {
       },
       {
         name: 'n8n_testar_codigo_no',
-        description: 'Executa e valida o código JavaScript de um nó de Code do n8n em ambiente seguro (dry run) com dados simulados.',
+        description: 'Executa o código JavaScript de um nó de Code do n8n com dados simulados (dry run) via vm nativo do Node. Isolamento básico apenas — não é um sandbox de segurança; não execute código de origem não confiável.',
         inputSchema: {
           type: 'object',
           properties: {
