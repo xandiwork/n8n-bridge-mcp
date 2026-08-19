@@ -1,0 +1,12 @@
+#!/bin/sh
+# Bloqueia segredos e termos proibidos antes de cada commit.
+# Instalação: npm run hooks:install
+set -e
+
+node scripts/check-blocked-terms.js --staged
+
+if command -v gitleaks >/dev/null 2>&1; then
+  gitleaks git --pre-commit --staged --redact --no-banner --config .gitleaks.toml
+else
+  echo "⚠️  gitleaks não instalado; varredura de segredos ignorada (https://github.com/gitleaks/gitleaks#installing)."
+fi

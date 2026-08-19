@@ -41,6 +41,8 @@ Conector inteligente, resiliente e blindado entre **n8n** e Agentes de IA via **
 - O `.env` nunca deve ser commitado (já está no `.gitignore`) — copie `.env.example` e preencha localmente.
 - `n8n_testar_codigo_no` roda o código no módulo `vm` nativo do Node, que oferece isolamento básico, não um sandbox de segurança real. Não use com código de origem não confiável.
 - `n8n_listar_credenciais` nunca retorna valores de senha/token, apenas nome e tipo.
+- Hooks de pre-commit (`npm run hooks:install`) e o CI rodam o [gitleaks](https://github.com/gitleaks/gitleaks) e um verificador de termos bloqueados (`scripts/check-blocked-terms.js`). A lista de termos fica fora do repositório: variável `BLOCKED_TERMS` (secret no CI) ou arquivo local `.blocked-terms`.
+- Todos os dados de teste são sintéticos.
 
 ---
 
@@ -59,13 +61,27 @@ N8N_API_KEY=sua_api_key_aqui
 N8N_TIMEOUT=5000
 ```
 
-### Configuração no MCP (`mcp_config.json` ou `claude_desktop_config.json`)
+### Configuração no Cliente MCP (`claude_desktop_config.json`, Cursor, Windsurf, etc.)
+
+**Windows:**
 ```json
 {
   "mcpServers": {
     "n8n-bridge": {
       "command": "node",
-      "args": ["D:/Trabalho/ANTIGRAVITY/clones GitHub/n8n-bridge-mcp/src/mcp-server.js"]
+      "args": ["C:/caminho/para/n8n-bridge-mcp/src/mcp-server.js"]
+    }
+  }
+}
+```
+
+**Linux / macOS:**
+```json
+{
+  "mcpServers": {
+    "n8n-bridge": {
+      "command": "node",
+      "args": ["/caminho/para/n8n-bridge-mcp/src/mcp-server.js"]
     }
   }
 }

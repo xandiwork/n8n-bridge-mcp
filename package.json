@@ -10,7 +10,9 @@
     "setup": "node scripts/setup.js",
     "test-connection": "node scripts/test-connection.js",
     "test": "node test/test_mcp_robustness.js",
-    "test:units": "node test/test_units.js",
+    "test:units": "node test/test_units.js && node test/test_blocked_terms.js",
+    "check:terms": "node scripts/check-blocked-terms.js",
+    "hooks:install": "git config core.hooksPath .githooks",
     "start": "node src/mcp-server.js"
   },
   "repository": {

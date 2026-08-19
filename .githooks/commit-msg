@@ -1,0 +1,3 @@
+#!/bin/sh
+# Impede termos proibidos na mensagem de commit.
+exec node scripts/check-blocked-terms.js --message "$1"

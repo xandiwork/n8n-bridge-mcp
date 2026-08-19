@@ -1,0 +1,13 @@
+# Configuração do gitleaks: regras padrão + regra para URLs de serviços hospedados.
+# Termos específicos (nomes de clientes/órgãos) ficam fora do repositório:
+# veja scripts/check-blocked-terms.js.
+title = "n8n-bridge-mcp"
+
+[extend]
+useDefault = true
+
+[[rules]]
+id = "hosted-service-url"
+description = "URL de serviço hospedado (Render, Railway, Fly, Heroku) no código"
+regex = '''(?i)[a-z0-9-]+\.((?:on)render\.com|up\.railway\.app|fly\.dev|herokuapp\.com)'''
+tags = ["url", "infra"]
