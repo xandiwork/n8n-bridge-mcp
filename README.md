@@ -59,13 +59,27 @@ N8N_API_KEY=sua_api_key_aqui
 N8N_TIMEOUT=5000
 ```
 
-### Configuração no MCP (`mcp_config.json` ou `claude_desktop_config.json`)
+### Configuração no Cliente MCP (`claude_desktop_config.json`, Cursor, Windsurf, etc.)
+
+**Windows:**
 ```json
 {
   "mcpServers": {
     "n8n-bridge": {
       "command": "node",
-      "args": ["D:/Trabalho/ANTIGRAVITY/clones GitHub/n8n-bridge-mcp/src/mcp-server.js"]
+      "args": ["C:/caminho/para/n8n-bridge-mcp/src/mcp-server.js"]
+    }
+  }
+}
+```
+
+**Linux / macOS:**
+```json
+{
+  "mcpServers": {
+    "n8n-bridge": {
+      "command": "node",
+      "args": ["/caminho/para/n8n-bridge-mcp/src/mcp-server.js"]
     }
   }
 }
